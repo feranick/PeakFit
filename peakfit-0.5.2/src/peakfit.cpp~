@@ -1,0 +1,1079 @@
+//*****************************************************************************
+//                                                         
+//		PeakFit							 
+//														 
+//		v. 0.5.1
+//
+//		(C) 2008 - Nicola Ferralis 					 
+//                                                        
+//		Multi-peak (Lorentzian and Gaussian) fitting utility. 								 
+//		It uses GNUPLOT as a back-end.
+//
+//		This program (source code and binaries) is free software; 
+//		you can redistribute it and/or modify it under the terms of the
+//		GNU General Public License as published by the Free Software 
+//		Foundation, in version 3 of the License.
+//
+//		This program is distributed in the hope that it will be useful,
+//		but WITHOUT ANY WARRANTY; without even the implied warranty of
+//		MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+//		GNU General Public License for more details.
+//
+//		You can find a complete copy of the GNU General Public License at:
+//		http://www.gnu.org/licenses/gpl.txt
+//												             
+//**********************************************************************************
+
+
+
+#if     _MSC_VER
+// Use these for MSVC
+#include <fstream.h>
+#include <iostream.h>
+#include <string.h>
+#include <math.h>
+#include <stdio.h>
+#include <errno.h>
+#include <windows.h>
+
+#define popen _popen 
+#define pclose     _pclose   
+#define MSini 1   // 1: save config file in C:/ (MS32 only)    0: save it in the same folder 
+#include "direct.h"			
+
+#else
+// Use these for gcc
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <fstream>
+#include <iostream>
+#include <string>
+#include <math.h>
+#include <stdio.h>  
+#include <errno.h>
+#define MSini 0
+using namespace std; 
+#endif
+
+#define GPFIFO "./gpio" 
+
+
+#if     _MSC_VER
+	#if MSini ==1					
+	char inipath[]="C:/";					
+	char mainpath[200];	
+	#endif
+#else
+char mainpath[PATH_MAX+1];
+#endif
+
+#if     _MSC_VER
+int const Max=50000;
+#else
+int const Max=100000;
+#endif
+
+int outtype, infofile, type, flag, bflag, steps, npeaks;
+int i, j, h, s, f1, f2, f;
+
+int outtype0=1;
+int infofile0=1;
+
+double X[Max], Y[Max];
+double PI = 3.14159265359;
+
+
+float mx[10], my[10];
+
+char fc[5], fc1[20], fc2[20];
+char nameIN[30], nameout[30], namenoext[30], nameOUT[30], namenoext2[30], nameinfo[30];
+char Ytype[10];
+char version[] = "0.5.1 - 20080315";
+char developer[] = "Nicola Ferralis - feranick@hotmail.com";
+
+#if     _MSC_VER
+char ini[]="PeakFit.cfg";
+#else
+char ini[]=".peakfit";
+#endif
+
+char difextension[20];
+char datextension[]=".dat";
+char bsextension[]="_part";
+char infoextension[]=".info.txt";
+void BackSub(char* name, char* nameout);
+void BackSub2(char* name, char* nameout);
+
+int Smooth();
+int norm();
+void Minim(double a, int b, int c);
+double Maximum();
+int XRange();
+
+void IniPlot(char* name);
+int IniPlotFit(char *name);
+void Plot1(char* name);
+void Plot2(char* name, char* nameout);
+void PlotSettings();
+void ClosePlot();
+
+int Fit(char* name);
+int Peak(char*name, char const *ctype, int peaktype);
+
+int ReadFile(char* name);
+int SaveFile(char *nameout);
+
+void SleepP(int time);
+int ReadKey();
+float ReadKeyF();
+void PreferencePanel();
+void clearscreen();
+
+FILE *command, *gpin;
+
+
+int main()
+{	
+	#if     _MSC_VER
+		#if MSini ==1
+		_chdir(_getcwd(mainpath, 200));  
+		_chdir(inipath);					
+		#endif
+	#else
+	getcwd(mainpath, PATH_MAX+1);	
+	chdir(getenv("HOME"));	
+	#endif
+
+	ifstream infile2;
+
+	#if     _MSC_VER
+		infile2.open(ini, ios::nocreate);   //MSVC
+	#else
+		infile2.open(ini);    		  //gcc
+	#endif
+
+	if(!infile2)			// the first time the program runs, it saves the settings 
+		{int *plottype;
+		plottype=(int *)malloc(sizeof(int));
+		cout<<"\nIs GnuPlot installed? (1: YES; 2: NO) ";
+		*plottype=ReadKey();
+		if (*plottype !=1)
+			{cout<<"\n Without GnuPlot, PeakFit cannot run. Please install it.\n";
+			cout<<" GnuPlot (freeware) can be downloaded at http://www.gnuplot.info \n\n";
+			free(plottype);			
+			return 0;}
+		
+		else
+			{ofstream outfile2(ini); 
+			outfile2<<outtype0<<"\n"<<infofile0<<"\n";
+			outtype=outtype0;
+			infofile=infofile0;}
+		free(plottype);
+		}
+
+	infile2>>outtype>>infofile;   // if the config file exists, it reads the settings from it. 
+	infile2.close();
+
+	#if     _MSC_VER
+		#if MSini ==1
+		_chdir(mainpath);			
+		#endif
+	#else
+		chdir(mainpath);
+	#endif	
+
+//**************User interface******************************************************
+
+	cout<< "________________________________________________________________________________";
+	cout<< "\nMulti-Peak Fitting Utility\n";
+	cout << "\n0) Exit ";
+	cout<<"\n1) Curve handling\t3) Preferences\t\t5) User Guide";
+	cout<<"\n2) Peak fitting\t\t4) File Browser\t\t6) About\n";
+
+//**********************************************************************************
+
+// Menu option #0: "Exit"
+
+	type=0;
+	type=ReadKey();
+	clearscreen();
+
+	if((type!=1) & (type!=2) & (type!=3) & (type!=4) & (type!=5) & (type!=6) )
+		{cout<<"Bye Bye\n";
+		return 0;}
+
+// Menu option #4: "File browser" - perform an operation similar to 'ls' in UNIX or 'dir' in Win32
+
+	if(type==4)
+	{
+	#if     _MSC_VER
+		command = popen("dir","w");
+	#else
+		command = popen("pwd","w");
+		command = popen("ls","w");
+	#endif
+	pclose(command);
+	return main();
+	}
+
+// Menu option #6: "About"
+
+	if(type==6)
+		{cout<<"\n Milti-Peak Fitting Utility\n v. "<<version;
+		cout<<"\n\n GnuPlot (version 4.0 or higher) is required to plot ASCII files and perform fitting.\n";
+		cout<<" GnuPlot (freeware) can be downloaded at http://www.gnuplot.info \n\n";
+		//cout<<" An updated version of this program can be found at:\n http://alpdmn.phys.psu.edu/others/lab/XPS \n\n";
+		cout<<" Suggestions and bugs:  "<<developer<<"\n\n";
+		cout<<" This program and source code are released under the: \n Gnu Public License v. 3.0.\n http://www.gnu.org/licenses/gpl.txt\n\n";
+		return main();}
+
+// Menu option #5: "User Guide"
+
+	if(type==5)
+		{
+		cout<<"User guide\n";
+		cout<<" 1. Basic curve smoothing, range customization X-axis normalization \n    (custom energy step).\n";
+		cout<<" 2. \"1 to 5\" peak fitting (using Lorentzian or Gaussian distributions).\n"; 
+		return main();}
+
+// Menu option #3: "Preferences" 
+
+	if (type==3)
+		{	
+		int *tmp, *preftype;
+		tmp=(int *)malloc(sizeof(int));
+		preftype=(int *)malloc(sizeof(int));
+		*preftype=1;
+		
+		while(*preftype!=0)
+			{PreferencePanel();
+			cout<<"  Type: (1 to 2: change individual settings)\n\t(9: restore default)   (0: exit)  ";
+			*preftype=ReadKey();
+
+			if (*preftype==1)
+				{cout<<"\n\nWith this option you can specify the name of the output file:";
+				cout<<"\n 1) Automatic: output is saved in a file with extension \".dat\".;";
+				cout<<"\n 2) Manual: the program asks for the name of the output file.";		
+				cout<<"\n\n (1: Automatic)  (2: Manual)  (other: no change) ";
+				*tmp=outtype;
+				outtype=ReadKey();
+				if (outtype !=1 && outtype !=2)
+					{cout<<" Value not updated\n";
+					outtype=*tmp;}
+				}
+			
+			if (*preftype==2)
+				{cout<<"\nWith this option you can save the acquisition information in a separate file:";
+				cout<<"\n 1) Saved: info saved in a file with extension \".info.txt\".;";		
+				cout<<"\n 2) Not saved: the program does not save the info.";
+				cout<<"\n\n (1: Saved)  (2: Not saved)  (other: no change) ";
+				*tmp=infofile;
+				infofile=ReadKey();
+				if (infofile !=1 && infofile !=2)
+					{cout<<" Value not changed\n";
+					infofile=*tmp;}
+				}		
+
+		
+			if (*preftype==9)
+				{outtype=outtype0;
+				infofile=infofile0;
+				cout<<"\n Default parameters succesfully restored!\n\n";}
+			}
+		free(tmp);	
+		free(preftype);	
+
+		#if     _MSC_VER
+			#if MSini ==1
+			_chdir(inipath);			
+			#endif
+		#else
+		chdir(getenv("HOME"));
+		#endif
+
+		
+		ofstream outfile2(ini);
+		outfile2<<outtype<<"\n"<<infofile<<"\n";
+		
+		#if     _MSC_VER
+			#if MSini ==1
+			_chdir(mainpath);			
+			#endif
+		#else
+		chdir(mainpath);
+		#endif
+
+		
+		outfile2.close();
+		return main();
+		}
+
+
+
+//  Background subtraction
+
+if (type==1)
+	{	
+		bflag=0;
+		cout<<"name file (WITHOUT the \".dat\" extension): ";
+		strcpy(difextension, ".dat");
+
+		cin>> nameIN;	
+		strcpy(namenoext, nameIN);
+		strcpy(nameOUT, nameIN);
+
+		char* name=strcat(nameIN, datextension);
+		strcat(nameOUT,bsextension); 
+		char* outname = strcat(nameOUT, datextension);
+		strcpy(nameout, outname);	
+		BackSub2(name, nameout);
+
+		
+		if(bflag!=0)
+			{cout<<"\nThe output file is: "<<nameout;
+			cout<<"\nManual background subtraction completed\n\n";	}
+	
+		return main();		
+	}
+
+// Option menu #2: Curve fitting
+
+if(type==2)
+	{	int *fitflag;
+		fitflag=(int *)malloc(sizeof(int));	
+		bflag=0;
+		*fitflag=1;
+		
+		cout<<"name file (WITHOUT the \".dat\" extension): ";
+		strcpy(difextension, ".dat");
+
+		cin>> nameIN;	
+		strcpy(namenoext, nameIN);
+		strcpy(nameOUT, nameIN);
+		
+		char* name=strcat(nameIN, datextension);
+		strcat(nameOUT,bsextension); 
+		char* outname = strcat(nameOUT, datextension);
+		strcpy(nameout, outname);		
+		while(*fitflag==1)		
+			{BackSub(name, nameout);
+			if(bflag==1)
+				Fit(nameout);
+			else
+				Fit(name);
+	
+			cout<<"\nPerform another fit on the same dataset? (1: YES; 2: NO) ";
+			*fitflag=ReadKey();
+			}
+	free(fitflag);
+	return main();
+	}
+
+return main();
+}
+
+//*********************************************************************
+// Background subtraction on ASCII files - Manual: Option 4
+
+void BackSub2(char* name, char* nameout)
+	{	int *sbtype;
+		sbtype = (int *)malloc(sizeof(int));
+
+		ReadFile(name);		
+		IniPlot(name);
+
+		*sbtype=2;
+		while(*sbtype==1 || *sbtype==2 || *sbtype==3 || *sbtype==4)
+			{ 
+			
+			cout<<"\n1: New range \t2: Smooth \t3: Norm. X-axis  \t4: Restore \t0: END ";
+			*sbtype=ReadKey(); 
+			    	
+			if(*sbtype==1)
+				{XRange();
+				bflag=1;}
+			if(*sbtype==2)
+				{Smooth();
+				bflag=1;}
+			if(*sbtype==3)				
+				{norm();
+				bflag=1;}
+			if(*sbtype==4)
+				{ReadFile(name);
+				bflag=0;}
+			SaveFile(nameout);
+			SleepP(100);
+			Plot2(name, nameout);
+			}
+
+		Minim(0.0,2,1);	
+		SaveFile(nameout);
+		SleepP(300);
+		fprintf(command,"replot \n");
+		ClosePlot();
+		//}
+	free(sbtype);
+	}
+			
+//*********************************************************************
+// Background subtraction on ASCII files - Manual: Option 4
+
+void BackSub(char* name, char* nameout)
+	{	int *sbtype;
+		sbtype = (int *)malloc(sizeof(int));
+
+		ReadFile(name);		
+		IniPlot(name);
+
+		*sbtype=1;
+		while(*sbtype==1 ||  *sbtype==3)
+			{ 
+			
+			cout<<"\n1: New range \t2: Full range  \t3: Restore \t0: END ";
+			*sbtype=ReadKey(); 
+			    	
+			if(*sbtype==1)
+				{XRange();
+				bflag=1;}
+			if(*sbtype==2)
+				{bflag=0;}
+			if(*sbtype==3)
+				{ReadFile(name);
+				bflag=0;}
+			SaveFile(nameout);
+			SleepP(100);
+			Plot2(name, nameout);
+			}
+
+		Minim(0.0,2,1);	
+		SaveFile(nameout);
+		SleepP(300);
+		fprintf(command,"replot \n");
+		ClosePlot();
+		//}
+	free(sbtype);
+	}
+
+//*********************************************************************
+//Routines for Background subtraction
+
+// Smooth
+
+int Smooth()      //5-point smooth
+	{double *Ytemp[Max]; 
+	for (int i=0; i<Max; i++)
+		{Ytemp[i] = (double *)malloc(sizeof(double));
+		if (Ytemp[i] == 0)
+			{printf("ERROR: Out of memory\n");
+			return 0;}
+		}
+	for(j=0; j<steps; j++)
+		{if(j<=2 || j>=steps-2)
+			{*Ytemp[j]=Y[j];}
+		else
+			{*Ytemp[j]=(-3*Y[j-2]+12*Y[j-1]+17*Y[j]+ 12*Y[j+1]-3*Y[j+2])/35.0;}
+		}
+		
+	for(j=0; j<steps; j++)
+		{Y[j]=*Ytemp[j];}
+	
+	for (int k=0; k<Max; k++)
+		{free(Ytemp[k]);}	
+		
+	return 0;	
+	}
+
+
+
+// Additional routines
+// Normalization to the minimum
+
+void Minim(double a, int b, int c)
+	{
+	double *Min;
+	Min = (double *)malloc(sizeof(double));
+
+	*Min=a;
+	for(i=0; i<steps;i++)
+		{if(Y[i]<*Min)
+			{*Min=Y[i];}
+		}
+	if(c==1)
+		{
+		if(*Min<0)
+			{int *type2;
+			type2 = (int *)malloc(sizeof(int));
+			cout<<"\nRenormalize negative values? (1: YES,  2: NO) ";
+			*type2=ReadKey();
+
+			if (*type2==1)
+				{cout<<" Negative values corrected\n";
+				for (int f=0; f<steps; f++)
+					Y[f] = Y[f] + fabs(*Min);}
+			else
+				{cout<<" Negative values not corrected\n";}
+			
+			free(type2);
+			}
+		}	
+	if(c==0)
+		{for(i=0; i<steps; i++)
+			{if(b==1)
+				{Y[i]=Y[i]-*Min;}
+			if(b==2)
+				{Y[i]=Y[i]+fabs(*Min);}
+			}
+		}
+	free(Min);	
+	}
+
+
+// Maximum finder
+double Maximum()
+	{
+	double max;
+	max=0;
+	for(i=0; i<steps;i++)
+		{if(Y[i]>=max)
+			{max= Y[i];}
+		}
+	return max;
+	}
+
+// X-axis normalization
+
+int norm()      
+	{int l, f;
+	double *X1[Max], *Y1[Max];
+	
+	for (l=0; l<Max; l++)
+		{X1[l] = (double *)malloc(sizeof(double));
+		Y1[l] = (double *)malloc(sizeof(double));
+		if ((X1[l] == 0) || (Y1[l] == 0))
+			{printf("ERROR: Out of memory\n");			
+			return 0; }
+		}
+	int steps2, range, type2;
+	double Egrid;
+	
+	steps2=steps;
+	*X1[0]= X[0];
+	*X1[1]=(X[steps-1]);
+	Egrid=0.0;
+
+	cout<<"\n (1: for fixed energy step)  (2: for fixed number of data points)    ";
+	type2=ReadKey();
+
+	if (type2==2)
+		{
+		cout<<"\n Number of points: ";
+		range=ReadKey();
+		if(range==0)
+			{for (int i=0; i<Max; i++)
+				{free(X1[i]);
+				free(Y1[i]);}
+			return 0;}
+
+		Egrid=fabs((X[steps-1]-X[0])/ range);
+		steps2=(long) fabs((*X1[1]-*X1[0])/ Egrid);}
+
+	if (type2==1)
+		{
+		cout<<" Energy step (eV): ";
+		Egrid=ReadKeyF();
+		if(Egrid==0.0)
+			{for (int i=0; i<Max; i++)
+				{free(X1[i]);
+				free(Y1[i]);}
+			return 0;}
+
+		steps2=(long) fabs((X[steps-1]-X[0])/ Egrid)+1;}
+	
+	if (type2 !=1 && type2 !=2)
+		{for (int i=0; i<Max; i++)
+			{free(X1[i]);
+			free(Y1[i]);}
+		return 0;}
+
+		j=0;
+		for(f=0;f<steps2; f++)
+			{if(X[0]-X[1]<0)
+				{*X1[f]=X[0]+f*Egrid;
+				while(true)	
+					{j++;
+					if((X[j]>=*X1[f]) )
+						{break;}
+					}
+				}
+			else
+				{*X1[f]=X[0]-f*Egrid;	
+				while(true)	
+					{j++;
+					if((X[j]<*X1[f]) )
+						{break;}
+					}
+				}
+		j=j-1;
+		*Y1[f]=(Y[j]+((Y[j+1]-Y[j])/(X[j+1]-X[j]))*(*X1[f]-X[j]));}
+
+	for(f=0; f<steps2; f++)
+		{Y[f]=*Y1[f];
+		X[f]=*X1[f];}
+		steps=steps2;
+
+for (l=0; l<Max; l++)
+	{free(X1[l]);
+	free(Y1[l]);}
+return 0;
+}
+
+// X-axis new range
+int XRange()
+{
+	#if     _MSC_VER
+	#else
+		if (mkfifo(GPFIFO, 0700)) 
+			{
+    			if (errno != EEXIST) 
+				{perror(GPFIFO);
+				unlink(GPFIFO);
+				return 1;}
+			}
+	#endif		
+	double *Xi, *Xf;
+	double *X1[Max], *Y1[Max];
+	for (int l=0; l<Max; l++)
+		{X1[l] = (double *)malloc(sizeof(double));
+		Y1[l] = (double *)malloc(sizeof(double));
+		if ((X1[l] == 0) || (Y1[l] == 0))
+			{printf("ERROR: Out of memory\n");			
+			return 0; }
+		}
+	Xi = (double *)malloc(sizeof(double));
+	Xf = (double *)malloc(sizeof(double));
+
+		
+	#if     _MSC_VER
+		*Xi=0.0;
+		*Xf=0.0;
+		cout<< "\n Enter the initial x coordinate: ";
+		*Xi=ReadKeyF();
+		cout<< " Enter the final x coordinate: ";
+		*Xf=ReadKeyF();	
+		    		
+	#else
+			
+		fprintf(command, "set print \"%s\"\n", GPFIFO);
+		fflush(command);
+	
+		if (NULL == (gpin = fopen(GPFIFO,"r"))) 
+			{perror(GPFIFO);
+   			pclose(command);
+   			return 1;}
+		
+		*Xi=0.0;
+		*Xf=0.0;
+		fprintf(command,"set mouse\n");
+		fprintf(command,"replot\n");
+		fflush(command);			
+		cout<<"\n";
+    		fprintf(command, "pause mouse ' Click mouse in the position of the initial coordinate. '\n");
+   		fflush(command);
+       		fprintf(command, "print MOUSE_X\n");
+    		fflush(command);
+		fscanf(gpin, "%lf", Xi);
+		fprintf(command, "pause mouse ' Click mouse in the position of the final coordinate. '\n");
+   		fflush(command);
+       		fprintf(command, "print MOUSE_X\n");
+    		fflush(command);
+		fscanf(gpin, "%lf", Xf);
+		
+		fclose(gpin);
+		unlink (GPFIFO);
+		if(*Xi>*Xf)
+			{cout<<"\n The initial coordinate must be smaller than the final.\n";
+			return 0;}
+		cout<<"\n New range: "<<*Xi<<" < X < "<<*Xf<<"\n";
+		
+	#endif
+	int o=0;
+	for(j=0; j<steps; j++)
+		{if(X[j]>=*Xi && X[j]<=*Xf)
+			{*X1[o]=X[j];
+			*Y1[o]=Y[j];
+			o++;}
+		}
+	steps=o;
+	for(j=0; j<steps; j++)
+		{X[j]=*X1[j];
+		Y[j]=*Y1[j];}
+
+	for(j=0; j<steps; j++)
+		{free(X1[j]);
+		free(Y1[j]);}
+	free(Xi);
+	free(Xf);
+
+	
+
+return 0;
+}
+
+//************************************
+//Fitting routines
+
+int Fit(char* name)
+{
+	int e, e1, peaktype;
+		
+	e=1;
+	e1=0;
+	ReadFile(name);
+				
+	while (e!=0)
+	{cout<<"\n Peak type: (1: Lorentzian,  2: Gaussian,  other: exit)? "; 
+	peaktype=ReadKey();
+	if(peaktype!=1 && peaktype!=2)
+		{return 0;}
+			
+	if(peaktype==1)
+		{Peak(name, "Lorentzian", 1);}
+	if(peaktype==2)
+		{Peak(name, "Gaussian", 2);}
+		
+	if (flag==0)
+		{ClosePlot();
+		return 0;}
+
+	#if     _MSC_VER
+		cout<<"\n Save the plot? (1: PNG, 2: EPS, 3: JPEG, 0: NO) ";
+	#else	 
+		fprintf(command,"pause 0  \"----------------------------------------------------------------    \" \n ");			
+		fprintf(command,"pause 0  \"    \" \n ");
+		fprintf(command,"pause -1  \" Save the plot? (1: PNG, 2: EPS, 3: JPEG, 0: NO)  \" \n ");
+		fflush(command);
+	#endif
+			
+	e1=ReadKey();
+	if(e1!=0)
+		{
+		if(e1==1)
+			{fprintf(command,"set terminal png size 1280,800\n");
+			fprintf(command,"set out '%s.png' \n", name);}
+		if(e1==2)
+			{fprintf(command,"set terminal postscript eps enhanced color\n");
+			fprintf(command,"set out '%s.eps' \n", name);}
+		if(e1==3)
+			{fprintf(command,"set terminal jpeg size 1280,800\n");
+			fprintf(command,"set out '%s.jpg' \n", name);}
+		fprintf(command,"set title '%s   (%d Peak-fit)' \n", name, npeaks);
+		fflush(command);
+		fprintf(command,"replot \n");
+		fflush(command);}
+
+
+		if(peaktype==1)
+			{cout<<"\n Each Lorentzian has this form: ((2*A*w/PI)/(4*(x-xc)^2 + w^2))\n";}
+		else 
+			{cout<<"\n Each Gaussian has this form: \n  ((A/((w/(2*sqrt(log(2))))*sqrt(PI/2)))*exp(-(x-xc)^2/((w*w)/(4*log(2)))))) \n";}
+		cout<<"\n Perform another fit? (1: YES, 0: NO) ";
+		e=ReadKey();						
+		ClosePlot();
+		}
+
+	cout<<"\n Final fitting parameters saved in \"fit.log\"\n";
+	
+	
+return 0;
+}
+
+//Multi-Peak fitting
+
+int Peak(char*name, char const *ctype, int peaktype)
+	{IniPlotFit(name);
+	if(flag==0)
+		{return 0;}
+
+	fprintf(command,"y0= 100.0 \n");
+	fprintf(command,"PI= %f\n", PI);
+	for(int i=1; i<=npeaks; i++)
+		{fprintf(command,"A%d = %f \n", i,my[i]);
+		fprintf(command,"xc%d = %f \n", i,mx[i]);
+		
+		fprintf(command,"w%d = 1.0\n", i);
+		if(peaktype==1)
+			{fprintf(command,"f%d(x) =  ((2*A%d*w%d/PI)/(4*(x-xc%d)*(x-xc%d) + w%d*w%d))\n",i,i,i,i,i,i,i);}
+		else
+			{fprintf(command,"f%d(x) =  ((A%d/((w%d/(2*sqrt(log(2))))*sqrt(PI/2)))*exp(-(x-xc%d)*(x-xc%d)/(w%d*w%d/(4*log(2))))) \n",i,i,i,i,i,i,i);}
+		}
+	
+	if(npeaks==1)
+	{fprintf(command,"f(x) =  y0 + f1(x)\n");}
+	if(npeaks==2)
+	{fprintf(command,"f(x) =  y0 + f1(x) + f2(x)\n");}
+	if(npeaks==3)
+	{fprintf(command,"f(x) =  y0 + f1(x) + f2(x) + f3(x)\n");}
+	if(npeaks==4)
+	{fprintf(command,"f(x) =  y0 + f1(x) + f2(x) + f3(x) + f4(x)\n");}
+	if(npeaks==5)
+	{fprintf(command,"f(x) =  y0 + f1(x) + f2(x) + f3(x) + f4(x) +f5(x)\n");}
+
+	fprintf(command,"plot f(x) title '%s' w l ls 1, \"%s\" using 1:2 title 'experiment' w l ls 1\n", ctype, name);
+	fflush(command);
+
+	if(npeaks==1)
+	{	fprintf(command,"fit f(x) \"%s\" using 1:2 via  y0,A1,xc1,w1 \n",name);
+		fflush(command);
+		fprintf(command,"plot \"%s\" using 1:2 title 'Experiment' w l lw 2, f(x) title 'Final' w l lw 2\n", name);}
+	if(npeaks==2)
+	{	fprintf(command,"fit f(x) \"%s\" using 1:2 via  y0,A1,xc1,w1,A2,xc2,w2 \n",name);
+		fflush(command);
+		fprintf(command,"plot \"%s\" using 1:2 title 'Experiment' w l lw 2, f(x) title 'Final' w l lw 2, f1(x)+y0 title '%s 1' w l lw 1, f2(x)+y0 title '%s 2' w l lw 1\n", name, ctype, ctype);}
+	if(npeaks==3)
+	{	fprintf(command,"fit f(x) \"%s\" using 1:2 via  y0,A1,xc1,w1,A2,xc2,w2,A3,xc3,w3 \n",name);
+		fflush(command);
+		fprintf(command,"plot \"%s\" using 1:2 title 'Experiment' w l lw 2, f(x) title 'Final' w l lw 2, f1(x)+y0 title '%s 1' w l lw 1, f2(x)+y0 title '%s 2' w l lw 1, f3(x)+y0 title '%s 3' w l lw 1\n", name, ctype, ctype, ctype);}
+	if(npeaks==4)
+	{	fprintf(command,"fit f(x) \"%s\" using 1:2 via  y0,A1,xc1,w1,A2,xc2,w2,A3,xc3,w3,A4,xc4,w4 \n",name);
+		fflush(command);
+		fprintf(command,"plot \"%s\" using 1:2 title 'Experiment' w l lw 2, f(x) title 'Final' w l lw 2, f1(x)+y0 title '%s 1' w l lw 1, f2(x)+y0 title '%s 2' w l lw 1, f3(x)+y0 title '%s 3' w l lw 1, f4(x)+y0 title '%s 4' w l lw 1\n", name, ctype, ctype, ctype, ctype);}
+	if(npeaks==5)
+	{	fprintf(command,"fit f(x) \"%s\" using 1:2 via  y0,A1,xc1,w1,A2,xc2,w2,A3,xc3,w3,A4,xc4,w4,A5,xc5,w5 \n",name);
+		fflush(command);
+		fprintf(command,"plot \"%s\" using 1:2 title 'Experiment' w l lw 2, f(x) title 'Final' w l lw 2, f1(x)+y0 title '%s 1' w l lw 1, f2(x)+y0 title '%s 2' w l lw 1, f3(x)+y0 title '%s 3' w l lw 1, f4(x)+y0 title '%s 4' w l lw 1, f5(x)+y0 title '%s 5' w l lw 1\n", name, ctype, ctype, ctype, ctype, ctype);}
+	
+	fflush(command);
+return 0;
+}
+
+
+//************************************
+//Plot routines
+
+void IniPlot(char* name)
+{	
+
+#if     _MSC_VER
+	command = popen("pgnuplot","w");
+#else
+	command = popen("gnuplot","w");
+#endif
+		
+	PlotSettings();
+	Plot1(name);
+}
+
+int IniPlotFit(char *name)
+{
+	#if     _MSC_VER
+		command = popen("pgnuplot","w");
+	#else
+		if (mkfifo(GPFIFO, 0600)) 
+			{
+    			if (errno != EEXIST) 
+				{perror(GPFIFO);
+				unlink(GPFIFO);
+				return 1;}
+			}
+		command = popen("gnuplot","w");
+	#endif		
+	
+	PlotSettings();
+	Plot1(name);
+	cout<<" Number of peaks (1-5): ";
+	npeaks=ReadKey();
+	if(npeaks!=1 &&	npeaks!=2 && npeaks!=3 && npeaks!=4 &&	npeaks!=5)	
+		{flag=0;
+		return 0;}	
+
+	#if     _MSC_VER
+		for (int n=1; n<=npeaks; n++) 
+			{mx[n]=0.0;
+			my[n]=0.0;
+			cout<<"\n Enter the approximate coordinates of the peak #"<<n<<": \n";	     			
+			cout<<"   X["<<n<<"]: ";
+			mx[n]=ReadKeyF();
+			cout<<"   Y["<<n<<"]: (or type \"m\" for maximum, \"m2\" for maximum/2) ";
+			my[n]=ReadKeyF();
+				
+			cout<<"   X["<<n<<"]= "<<mx[n]<<";   Y["<<n<<"]= "<<my[n]<<"\n";}
+					
+		#else
+		
+		fprintf(command, "set print \"%s\"\n", GPFIFO);
+		fflush(command);
+	
+		if (NULL == (gpin = fopen(GPFIFO,"r"))) 
+			{perror(GPFIFO);
+			pclose(command);
+			return 1;}
+	
+		for (int n=1; n<=npeaks; n++) 
+			{mx[n]=0.0;
+			my[n]=0.0;
+	
+			fprintf(command, "pause mouse ' Click mouse in the position corresponding to the maximum of peak # %d: '\n", n);   		 	
+			fflush(command);
+			cout<<"\n";   				//for new line in gnuplot v.4.2	       			
+			fprintf(command, "print MOUSE_X, MOUSE_Y\n");
+			fflush(command);
+			fscanf(gpin, "%f %f", &mx[n], &my[n]);		
+			cout<<"   X["<<n<<"]= "<<mx[n]<<";   Y["<<n<<"]= "<<my[n]<<"\n";			
+			}
+
+		fclose(gpin);
+		unlink (GPFIFO);
+				
+	#endif
+		
+	return 0;
+}
+
+
+void Plot1(char* name)
+{	
+	fprintf(command,"plot \"%s\" with lines\n", name);
+	fflush(command);
+}
+
+void Plot2(char* name , char* nameout)
+{	
+	fprintf(command,"plot \"%s\" with lines, \"%s\" with lines\n", name, nameout);
+	fflush(command);
+}
+
+void PlotSettings()
+	{
+	fprintf(command,"set mouse\n");
+	fprintf(command,"set autoscale\n");     
+	fprintf(command,"set grid\n");
+	fprintf(command,"set xlabel 'X'\n");
+	fprintf(command,"set ylabel 'Y'\n");
+	
+	fprintf(command,"set title 'Use the right button of your mouse to zoom. Type p to unzoom. Middle click to lock cursor.'\n");
+	fflush(command);
+	}	
+
+void ClosePlot()
+	{
+	fprintf(command,"q\n");
+	fflush(command);
+	
+	}
+
+//************************************
+// File I/O
+
+int ReadFile(char* name)
+{
+	#if     _MSC_VER
+		ifstream infile(name, ios::nocreate);		//MSVC
+	#else
+		ifstream infile(name);		//gcc
+	#endif
+
+	flag=1;
+
+	if(!infile)
+		{cout<<"\n file \""<< name<<"\" not found\n";
+		flag=0;
+		return 0;}
+			
+	j=0;
+
+	while(!infile.eof())
+		{infile>>X[j]>>Y[j];
+		j++;}
+	steps=j-1;
+
+	infile.close();
+	return 0;
+}
+
+int SaveFile(char *nameout)
+{	ofstream outfile(nameout);	
+	for(j=0; j<steps; j++)
+		{outfile<<X[j]<<"\t"<<Y[j]<<"\n";}
+	outfile.close();
+	return 0;
+}
+
+//************************************
+// Sleep
+
+void SleepP(int time)
+{	
+	#if     _MSC_VER
+		Sleep(time);
+	#else
+		usleep(time*1000); 
+	#endif
+}
+
+//************************************
+// Keyboard input I/O
+
+int ReadKey()
+{	char tkc[10];
+	int tk;
+	cin>>tkc;
+		
+	tk=(int) atof(tkc);
+	if(tk<0)
+		{return 10;}
+	else
+		{}
+
+	return tk;
+}
+
+float ReadKeyF()
+{	char tkc[10];
+	float tk;
+	cin>>tkc;
+	if (strcmp(tkc,"m")==0 || strcmp(tkc,"m2")==0)
+		{if (strcmp(tkc,"m")==0)
+			{tk=(float) Maximum();}
+		if (strcmp(tkc,"m2")==0)
+			{tk=(float) Maximum()/2;}
+		}
+
+	else
+		{	
+		tk= (float) atof(tkc);
+		if(tk<0)
+			{return 10;}
+		else
+			{}
+	}
+
+	return tk;
+}
+
+//***********************************
+
+void PreferencePanel()
+
+{	cout<<"\n****************************************************************************\n \"Preferences\" \n";
+	cout<<"\n1)";
+	if(outtype ==1)
+		{cout <<" Output is saved in a file with extension \".dat\".\n";}		
+	if (outtype ==2)
+		{cout<<" The program asks for the name of the output file.\n";}
+	
+	cout<<"2)";
+	if(infofile ==1)
+		{cout <<" Info saved in a file with extension \".info.txt\". \n";}
+	if(infofile ==2)
+		{cout<<" Info file not saved.\n";}	
+	
+	cout<<"\n*****************************************************************************\n";
+}
+
+
+void clearscreen() 
+{
+	if (system( "clear" )) system( "cls" );
+}
